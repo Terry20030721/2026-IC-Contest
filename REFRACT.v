@@ -26,6 +26,7 @@ wire [15:0] zy_result;      // 最終算好的 zy (Q4.12 格式)
 
 reg [23:0] lut_eta;     // 折射率倒數 LUT 輸出 (Q8.16 格式)
 reg [23:0] gx_val;      // gx 斜率 LUT輸出 (Q8.16 格式)
+reg [23:0] gy_val;     // gy 斜率 LUT輸出 (Q8.16 格式)
 reg [23:0] z_term_x;    // z_term 高度項 LUT 輸出 (Q8.16 格式)
 reg [23:0] z_term_y;    // z_term 高度項 LUT輸出 (Q8.16 格式)
 
@@ -121,10 +122,15 @@ always @(*) begin
 end
 
 reg [23:0] Z_val; // 真實的 Z 值 (Q8.16 格式)，用來計算誤差距離
+reg [47:0] k;
+reg [47:0] g_pow2; // gx^2 + z_term_x^2 的值 (Q8.16 格式)，用來計算誤差距離
+reg [71:0] sqr_kgg; // kgg 的平方 (Q8.16 格式)，用來計算誤差距離
 
 always @(*) begin
-    Z_val = 6 - z_term_x - z_term_y; // Z_val = 6 - z_term_x - z_term_y
+    Z_val = 24'd393216 - z_term_x - z_term_y; // Z_val = 6 - z_term_x - z_term_y
+    g_pow2 = gx_val * gx_val + gy_val * gy_val + 48'd4294967296; // gx^2 + gy^2
 end
+
 
 
 // ========================================
