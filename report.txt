@@ -1,0 +1,20 @@
+
+FTP account:                       B26xxx
+
+Level:                             A/B/C
+Synthesis area:                    123456
+Total cycles:                      30000+30000
+Total mismatch points:             0
+CYCLE:                             50.0
+
+--- RTL category---
+HDL simulator :                    xrun/vcs/vsim/... 
+RTL filename :                     REFRACT.v 
+
+--- Pre-layout gate-level ---
+gate-levelfilename:                REFRACT_syn.v  
+gate-level sdf filename:           REFRACT_syn.sdf        
+synthesis database:                REFRACT_syn.sdf        
+
+-----(annotation)--------------------------------------------------------
+ (optional, write down anything that you want raters know)
