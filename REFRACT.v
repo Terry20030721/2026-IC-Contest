@@ -130,35 +130,23 @@ always @(posedge CLK or posedge RST) begin
     end
 end
 
-// 呼叫 DW 除法器算 1 / g^2 (Q17.14)
-// 【注意】這裡的分母要換成吃 reg1_g2，不再是原本的 g2 喔！
-wire signed [31:0] inv_g2; 
-DW_div #(32, 31, 1, 1) U_DIV_1_G2 (
-    .a(32'sd268435456), 
-    .b(reg1_g2),        // <--- 吃第一棒傳下來的資料
-    .quotient(inv_g2)   
-);
-
-// ==========================================
-// 計算 k 並呼叫 DW 開根號
-// ==========================================
-wire signed [31:0] bracket = 32'sd16384 - inv_g2; 
-wire signed [49:0] eta_bracket_full = eta_2 * bracket;
-wire signed [35:0] eta_bracket = eta_bracket_full[49:14];
-// k = 1 - (eta^2 * bracket)
-wire signed [35:0] k = 36'sd16384 - eta_bracket; 
-
-// k * g^2 (利用第一棒傳下來的 g2)
-wire signed [66:0] k_g2_full = k * reg1_g2; // <--- 吃第一棒的資料
-wire [62:0] k_g2_chopped = k_g2_full[66:4];
 
 // ==========================================
 // 🚀 Pipeline Stage 2 的組合邏輯與暫存器 (Cycle 2)
+// 🌟 拔除除法器，改用數學優化算 k*g^2
 // ==========================================
+wire signed [31:0] g2_minus_1 = reg1_g2 - 32'sd16384; 
+wire signed [49:0] eta2_g2m1_full = $signed(reg1_eta_2) * $signed(g2_minus_1); 
+wire signed [35:0] eta2_g2m1 = eta2_g2m1_full[49:14];        
+wire signed [36:0] k_g2 = $signed(reg1_g2) - $signed(eta2_g2m1); 
+wire [62:0] k_g2_to_sqrt = (k_g2 > 0) ? {16'd0, k_g2, 10'd0} : 63'd0;
+
+wire signed [47:0] eta_g2_full = $signed(reg1_eta) * $signed(reg1_g2); 
+wire signed [33:0] eta_g2 = eta_g2_full[47:14];      
+
 // --- Stage 2 交接棒 ---
-// 把算好的 k_g2_chopped 和後面還會用到的東西繼續往下傳
-reg [62:0] reg2_k_g2_chopped;
-// 下面這些是純粹的「跟屁蟲」，因為後面還要用，只能跟著繼續跑
+reg [62:0] reg2_k_g2_to_sqrt;
+reg signed [33:0] reg2_eta_g2;
 reg signed [21:0] reg2_Z;
 reg signed [21:0] reg2_gx;
 reg signed [21:0] reg2_gy;
@@ -168,12 +156,12 @@ reg [3:0] reg2_y;
 
 always @(posedge CLK or posedge RST) begin
     if (RST) begin
-        reg2_k_g2_chopped <= 0; reg2_Z <= 0; reg2_gx <= 0; reg2_gy <= 0;
+        reg2_k_g2_to_sqrt <= 0; reg2_eta_g2 <= 0;
+        reg2_Z <= 0; reg2_gx <= 0; reg2_gy <= 0;
         reg2_eta <= 0; reg2_x <= 0; reg2_y <= 0;
     end else if (current_state == CALC) begin
-        // 把第二棒算出來的東西吃進來
-        reg2_k_g2_chopped <= k_g2_chopped;
-        // 把第一棒傳下來、但第二棒沒用到，可是後面還要用的東西，照抄往下傳
+        reg2_k_g2_to_sqrt <= k_g2_to_sqrt;
+        reg2_eta_g2       <= eta_g2;
         reg2_Z   <= reg1_Z;
         reg2_gx  <= reg1_gx;
         reg2_gy  <= reg1_gy;
@@ -184,27 +172,28 @@ always @(posedge CLK or posedge RST) begin
 end
 
 // ==========================================
-// 🚀 Pipeline Stage 3 (Cycle 3) - 專心開根號與準備分子分母
+// 🚀 Pipeline Stage 3 (Cycle 3) - 專心開根號與準備終極分子分母
 // ==========================================
 wire [31:0] sqrt_k_g2; 
-// 呼叫 DW 開根號，吃第二棒的資料！
 DW_sqrt #(63, 0) U_SQRT_KG2 (
-    .a(reg2_k_g2_chopped), // <--- 吃第二棒傳下來的
+    .a(reg2_k_g2_to_sqrt), 
     .root(sqrt_k_g2)  
 );
 
-// 準備 Stage 4 除法器要用的分子與分母 (組合邏輯)
-wire signed [34:0] coef = $signed({1'b0, sqrt_k_g2}) <<< 2; 
-wire signed [35:0] denom = coef - reg2_eta; // <--- 吃第二棒的 eta
-wire signed [57:0] num = (-reg2_Z) * coef;  // <--- 吃第二棒的 Z
+// 🌟 核心優化：計算 N = eta - sqrt(k * g^2)
+wire signed [34:0] sqrt_kgg_14 = $signed({1'b0, sqrt_k_g2}) <<< 2; 
+wire signed [35:0] N = $signed(reg2_eta) - $signed(sqrt_kgg_14); 
+
+// 🌟 算分子與分母 (避開 Verilog 位元擴充地雷)
+wire signed [57:0] num = $signed(reg2_Z) * $signed(N);        // 分子：Z * N (保留負數沒關係，因為它不用當除數)
+wire signed [36:0] denom = $signed(reg2_eta_g2) - $signed(N); // 分母：eta*g^2 - N (正數減負數 = 正數！安全！)
 
 // --- Stage 3 交接棒 ---
-// 把算好的分子分母，還有後面會用到的跟屁蟲，繼續存進 reg3！
 reg signed [57:0] reg3_num;
-reg signed [35:0] reg3_denom;
-reg signed [21:0] reg3_gx; // 跟屁蟲繼續跟！
+reg signed [36:0] reg3_denom;
+reg signed [21:0] reg3_gx; 
 reg signed [21:0] reg3_gy;
-reg [3:0] reg3_x;          // 座標繼續跟！
+reg [3:0] reg3_x;          
 reg [3:0] reg3_y;
 
 always @(posedge CLK or posedge RST) begin
@@ -213,10 +202,8 @@ always @(posedge CLK or posedge RST) begin
         reg3_gx <= 0; reg3_gy <= 0; 
         reg3_x <= 0; reg3_y <= 0;
     end else if (current_state == CALC) begin
-        // 把第三棒算出來的東西吃進來
         reg3_num   <= num;
         reg3_denom <= denom;
-        // 把第二棒傳下來的東西照抄往下傳
         reg3_gx    <= reg2_gx;
         reg3_gy    <= reg2_gy;
         reg3_x     <= reg2_x;
@@ -225,19 +212,18 @@ always @(posedge CLK or posedge RST) begin
 end
 
 // ==========================================
-// 🚀 Pipeline Stage 4 (Cycle 4) - 專心做最後除法與產出最終答案！
+// 🚀 Pipeline Stage 4 (Cycle 4) - 全場唯一的一顆除法器！
 // ==========================================
 wire signed [57:0] term1; 
-// 呼叫第二顆 DW 除法器，吃第三棒的資料！
-DW_div #(58, 36, 1, 1) U_DIV_FINAL (
-    .a(reg3_num),    // <--- 吃第三棒的分子      
-    .b(reg3_denom),  // <--- 吃第三棒的分母      
+DW_div #(58, 37, 1, 1) U_DIV_FINAL (
+    .a(reg3_num),          
+    .b(reg3_denom),        
     .quotient(term1)  
 );
 
 // 計算偏移量並砍回 14 位小數
-wire signed [79:0] zx_offset_full = term1 * reg3_gx; // <--- 吃第三棒的 gx
-wire signed [79:0] zy_offset_full = term1 * reg3_gy; // <--- 吃第三棒的 gy
+wire signed [79:0] zx_offset_full = $signed(term1) * $signed(reg3_gx); 
+wire signed [79:0] zy_offset_full = $signed(term1) * $signed(reg3_gy); 
 wire signed [50:0] zx_offset = zx_offset_full[64:14];
 wire signed [50:0] zy_offset = zy_offset_full[64:14];
 
@@ -251,6 +237,7 @@ wire signed [51:0] zy_full = orig_Y + zy_offset;
 // 終極大裁切：對接 SRAM 的 Q4.12 格式！
 wire [15:0] SRAM_D_ZX = zx_full[17:2]; 
 wire [15:0] SRAM_D_ZY = zy_full[17:2];
+
 
 // --- Stage 4 交接棒 (最終衝線！) ---
 // 這是我們最後一棒，我們要把它存在 "final" 暫存器裡，讓 FSM 可以安穩地寫進 SRAM
@@ -386,5 +373,70 @@ always @(posedge CLK or posedge RST) begin
     end
 end
 
+
+endmodule
+
+
+// ==========================================
+// Synopsys DesignWare DW_div 行為級模擬模型 (防雷修正版)
+// ==========================================
+module DW_div #(
+    parameter a_width = 8,
+    parameter b_width = 8,
+    parameter tc_mode = 0,
+    parameter rem_mode = 1
+) (
+    input  wire [a_width-1:0] a,
+    input  wire [b_width-1:0] b,
+    output reg  [a_width-1:0] quotient,  // <--- 改成 reg
+    output reg  [b_width-1:0] remainder, // <--- 改成 reg
+    output wire               divide_by_0
+);
+
+    assign divide_by_0 = (b == 0) ? 1'b1 : 1'b0;
+
+    always @(*) begin
+        if (tc_mode == 1) begin
+            // 有號數除法，用 if 隔開，絕對不會被強制降級！
+            quotient  = $signed(a) / $signed(b);
+            remainder = $signed(a) % $signed(b);
+        end else begin
+            // 無號數除法
+            quotient  = a / b;
+            remainder = a % b;
+        end
+    end
+
+endmodule
+
+
+// ==========================================
+// Synopsys DesignWare DW_sqrt 行為級模擬模型 (僅供 Simulation 使用)
+// ==========================================
+module DW_sqrt #(
+    parameter width = 8,
+    parameter tc_mode = 0
+) (
+    input  wire [width-1:0] a,
+    output reg  [(width+1)/2-1:0] root
+);
+
+    integer i;
+    reg [(width+1)/2-1:0] temp_root;
+    reg [width*2-1:0] sq; // 用來放平方值的超大暫存器，避免溢位
+
+    always @(*) begin
+        temp_root = 0;
+        // 從最高位開始，逐位測試 1 或 0 (二分逼近法)
+        for (i = ((width+1)/2)-1; i >= 0; i = i - 1) begin
+            temp_root[i] = 1'b1;
+            sq = temp_root;
+            // 如果目前的猜測值平方大於輸入 a，代表猜太大了，把這個 bit 變回 0
+            if ((sq * sq) > a) begin
+                temp_root[i] = 1'b0;
+            end
+        end
+        root = temp_root;
+    end
 
 endmodule
